@@ -1,7 +1,8 @@
-import { Stack, StackProps } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2'
-import { SubnetType } from 'aws-cdk-lib/aws-ec2';
+import ecs = require('aws-cdk-lib/aws-ecs');
+import ecs_patterns = require('aws-cdk-lib/aws-ecs-patterns');
 
 
 export class CMSVpcStack extends Stack {
@@ -15,24 +16,37 @@ export class CMSVpcStack extends Stack {
       maxAzs: 2,
       subnetConfiguration: [
         {
-          name: 'cms-demo-public-subnet-1',
+          name: 'public-sn1',
           subnetType: ec2.SubnetType.PUBLIC,
           cidrMask: 24
         },
         {
-          name: 'cms-demo-private-subnet-1',
+          name: 'private-sn1',
           subnetType: ec2.SubnetType.PRIVATE_WITH_NAT,
           cidrMask: 24
         },
         {
-          name: 'cms-demo-private-subnet-2',
+          name: 'private-sn2',
           subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
           cidrMask: 24
         }
 
       ]
 
-    })
+    });
 
+    const cluster = new ecs.Cluster(this, 'CMS-Demo-Cluster', { vpc });
+
+    const service =  new ecs_patterns.ApplicationLoadBalancedFargateService(this, "CMS-Admin-Service", {
+      cluster,
+      memoryLimitMiB: 1024,
+      desiredCount: 1,
+      cpu: 512,
+      loadBalancerName: 'CMS-Demo-lb',
+      healthCheckGracePeriod: Duration.seconds(150),
+      taskImageOptions: {
+        image: ecs.ContainerImage.fromRegistry("cms-uat-repository/administration_46"),
+      },
+    });
   }
 }
