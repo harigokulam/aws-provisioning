@@ -3,6 +3,7 @@ import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2'
 import ecs = require('aws-cdk-lib/aws-ecs');
 import ecs_patterns = require('aws-cdk-lib/aws-ecs-patterns');
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 
 
 export class CMSVpcStack extends Stack {
@@ -48,5 +49,29 @@ export class CMSVpcStack extends Stack {
         image: ecs.ContainerImage.fromRegistry("cms-uat-repository/administration_46"),
       },
     });
+
+    
+    // const tg1 = new elbv2.ApplicationTargetGroup(this, 'TG1', {
+    //   targetType: elbv2.TargetType.IP,
+    //   protocol: elbv2.ApplicationProtocol.HTTP,
+    //   port:9002,
+    //   vpc: vpc
+    // });
+
+    //const listener = service.listener ; 
+    //service.loadBalancer.addListener('Listener', {port: 80, open: true});
+    //listener.
+    // listener.addTargets('admin', {
+    //   protocol: elbv2.ApplicationProtocol.HTTP,
+    //   port:80,
+    //   priority: 5,
+    //   conditions: [
+    //     elbv2.ListenerCondition.pathPatterns(['/admin'])
+    //   ]
+      
+    // })
+    // listener.addAction('DefaultAction', {
+    //   action: elbv2.ListenerAction.forward([tg1])
+    // })
   }
 }
