@@ -1,10 +1,15 @@
-import { aws_elasticloadbalancingv2 as elbv2, Duration, Stack, StackProps } from "aws-cdk-lib";
+import { aws_elasticloadbalancingv2 as elbv2, CfnOutput, Duration, Stack, StackProps } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import { HealthCheck } from "aws-cdk-lib/aws-appmesh";
 import { TagStatus } from "aws-cdk-lib/aws-ecr";
+import { InstanceType, SubnetFilter, SubnetType } from "aws-cdk-lib/aws-ec2";
+import { CfnOutcome } from "aws-cdk-lib/aws-frauddetector";
+import { loadBalancerNameFromListenerArn } from "aws-cdk-lib/aws-elasticloadbalancingv2";
+import { AwsLogDriverMode } from "aws-cdk-lib/aws-ecs";
+import { CfnDisk } from "aws-cdk-lib/aws-lightsail";
 //import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 
 
@@ -12,17 +17,30 @@ export class CMSLoadBalancer extends Stack {
     constructor(scope: Construct, id: string, props?: StackProps) {
         super(scope, id, props);
 
-        const environment = "demo";
+        const env_name = "demo";
+        const ecrurl = '870562585226.dkr.ecr.ap-south-1.amazonaws.com';
+
+        //'demo-cms-' + service + '-repo',
+        
         
         const services = [
-            // {name: 'administration', port: 9002, path: '/admin'},
-            // {name: 'authentication', port: 9003, path: '/auth'},
-            {name: 'configserver', port: 9009, path: '/config'}
-        ]
-        const vpc = new ec2.Vpc(this, 'cms-' + environment + '-vpc', {
+           
+            {name: 'authentication', port: 9003, path: '/authentication/*', repository: 'demo-cms-authentication-repo', tag: 'V_2'},
+            // {name: 'administration', port: 9092, path: '/administration/*', repository: 'demo-cms-administration-repo', tag: 'V_12'},
+            // {name: 'notification', port: 9007, path: '/notification/*', repository: 'demo-cms-notification-repo', tag: 'V_2'},
+            // {name: 'patientenrollment', port: 9008, path: '/patientenrollment/*', repository: 'demo-cms-patientenrollment-repo', tag: 'V_2'},
+            // {name: 'careplan', port: 9006, path: '/careplan/*', repository: 'demo-cms-careplan-repo', tag: 'V_2'},
+            // {name: 'inboundintegration', port: 9005, path: '/inboundintegration/*', repository: 'demo-cms-inboundintegration-repo', tag: 'V_2'},
+            
+            {name: 'configserver', port: 8001, path: '/config/*', repository: 'demo-cms-configserver-repo', tag: 'V_2'},
+            {name: 'servicediscovery', port: 8761, path: '/registry/*', repository: 'demo-cms-servicediscovery-repo', tag : 'V_3'},
+            {name: 'frontend', port: 80, path: '/*', repository: 'demo-cms-frontend-repo', tag: 'V_6'}
+        ];
+
+
+        const vpc = new ec2.Vpc(this, 'cms-' + env_name + '-vpc', {
             cidr: '10.0.0.0/16',
             natGateways: 1,
-            maxAzs: 2,
             subnetConfiguration: [
                 {
                     name: 'public-sn1',
@@ -44,14 +62,29 @@ export class CMSLoadBalancer extends Stack {
 
         });
 
-        const cluster = new ecs.Cluster(this, 'CMS-' + environment + '-Cluster', { vpc });
+        const bastion = new ec2.BastionHostLinux(this, 'cms-my-bastion-host', {
+            vpc,
+            instanceName: 'my-bastion-cms',
+            subnetSelection: { subnetType : ec2.SubnetType.PUBLIC} ,
+            
+        })
+        
+        const cluster = new ecs.Cluster(this, 'CMS-' + env_name + '-Cluster', { vpc });
 
         const lb = new elbv2.ApplicationLoadBalancer(this, 'LB', {
             vpc,
-            internetFacing: true
+            internetFacing: true,
+            loadBalancerName: 'cms-demo'
         });
 
-        const listener = lb.addListener('CMS-' + environment + '-Listener', {
+        const lbname = new CfnOutput(this, 'lbname', {
+            value : lb.loadBalancerDnsName,
+            description: 'Load Balancer N`ame'
+        });
+
+        console.log('LB Name', lbname.value);
+        
+        const listener = lb.addListener('CMS-' + env_name + '-Listener', {
             port: 80,
             open: true
         });
@@ -61,16 +94,53 @@ export class CMSLoadBalancer extends Stack {
                 messageBody: 'OK'
             })
         });
-
+        let p = 5;
         services.forEach(s => {
+            
+            const logging = new ecs.AwsLogDriver ({
+                
+                streamPrefix: 'ecs',
+                logRetention: 3,
+                mode: AwsLogDriverMode.NON_BLOCKING
+            });
+
+            const task = new ecs.FargateTaskDefinition( this, env_name + '-' + s.name + '-Task', {
+                memoryLimitMiB: 1024, 
+                cpu: 512
+            });
+         
+
+            const container = task.addContainer(s.name +'-Container',  {
+                image: ecs.ContainerImage.fromEcrRepository( ecr.Repository.fromRepositoryName(this, s.name + '-repo', s.repository), s.tag),
+                portMappings: [ {containerPort: s.port} ],
+                logging,
+                environment: {'spring.profiles.active' : env_name}
+            })
+           
+    
+            const service = new ecs.FargateService(this, env_name + '-' + s.name + '-Service', {
+                cluster,
+                taskDefinition: task,
+                desiredCount: 1,
+                healthCheckGracePeriod: Duration.seconds(150), 
+                
+            });
+
+            
+
             listener.addTargets( s.name + '-TG', {
-                priority:9,
+                priority: p++,
                 conditions: [
                     elbv2.ListenerCondition.pathPatterns([s.path])
                 ],
-                port:s.port,
+                
+                port:80,
                 protocol: elbv2.ApplicationProtocol.HTTP,
-                targetGroupName: 'CMS-Demo-' + s.name + '-TG',
+                targets: [service.loadBalancerTarget({
+                    containerName: s.name + '-Container',
+                    containerPort:s.port,
+                   
+                })],
                 healthCheck: {
                     path: '/api/health/',
                     healthyThresholdCount: 2,
@@ -79,80 +149,22 @@ export class CMSLoadBalancer extends Stack {
                 }
                      
             });
-
-            const task = new ecs.FargateTaskDefinition( this, environment + '-' + s.name + '-Task', {
-                memoryLimitMiB: 1024, 
-                cpu: 512
-            });
-            //ecr.Repository.fromRepositoryName(this, '870562585226.dkr.ecr.ap-south-1.amazonaws.com', environment + '-cms-' + s.name + '-repo' ), 'latest')
-
-            const container = task.addContainer(s.name +'-Container',  {
-                
-                image: ecs.ContainerImage.fromEcrRepository( 
-                    ecr.Repository.fromRepositoryName(this, '870562585226.dkr.ecr.ap-south-1.amazonaws.com', 'cms-config-server-test'), 'v_8')
-            })
             
-            container.addPortMappings({
-                containerPort:s.port
-            })
-    
-            const service = new ecs.FargateService(this, environment + '-' + s.name + '-Service', {
-                cluster,
-                taskDefinition: task,
-                desiredCount: 1,
-                healthCheckGracePeriod: Duration.seconds(150), 
-                
-            });
-
             //service.loadBalancerTarget()
     
-            service.registerLoadBalancerTargets({
-                containerName: s.name + '-Container',
-                containerPort:s.port,
-                newTargetGroupId: 'New-Demo-' + s.name + '-TG',
-                listener: ecs.ListenerConfig.applicationListener(listener, {
-                    protocol: elbv2.ApplicationProtocol.HTTP,
-                    port: s.port
-                    //targetGroupName: 'CMS-Demo-' + s.name + '-TG',
-                })
-            })
+            // service.registerLoadBalancerTargets({
+            //     containerName: s.name + '-Container',
+            //     containerPort:s.port,
+            //     newTargetGroupId: 'New-Demo-' + s.name + '-TG',
+            //     listener: ecs.ListenerConfig.applicationListener(listener, {
+            //         protocol: elbv2.ApplicationProtocol.HTTP,
+            //         port: s.port
+            //         //targetGroupName: 'CMS-Demo-' + s.name + '-TG',
+            //     })
+            // })
             
         });
         
-        // listener.addTargets( 'Admin', {
-        //     priority:10,
-        //     conditions: [
-        //         elbv2.ListenerCondition.pathPatterns(['/admin'])
-        //     ],
-        //     port:9002,
-        //     protocol: elbv2.ApplicationProtocol.HTTP,
-        //     targetGroupName: 'CMS-Demo-Admin-TG'
-                 
-        // });
-
-        // listener.addTargets( 'Auth', {
-        //     priority:9,
-        //     conditions: [
-        //         elbv2.ListenerCondition.pathPatterns(['/auth'])
-        //     ],
-        //     port:9003,
-        //     protocol: elbv2.ApplicationProtocol.HTTP,
-        //     targetGroupName: 'CMS-Demo-Auth-TG'
-                 
-        // });
-        // listener.addTargets( 'Notification', {
-        //     priority:9,
-        //     conditions: [
-        //         elbv2.ListenerCondition.pathPatterns(['/notification'])
-        //     ],
-        //     port:9003,
-        //     protocol: elbv2.ApplicationProtocol.HTTP,
-        //     targetGroupName: 'CMS-Demo-Notification-TG'
-                 
-        // });
-
-        
-
         
     
     }
